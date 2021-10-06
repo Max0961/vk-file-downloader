@@ -28,6 +28,7 @@ def clock(f):
         f(*args, **kwargs)
         elapsed_time = datetime.now() - start_time
         print(f'Затраченное время: {elapsed_time}')
+
     return wrapper
 
 
@@ -65,7 +66,7 @@ def main():
         session, auth_success = login(username, password)
         if not auth_success:
             return
-        data = prepare_data(session)
+        file_args_dict = prepare_data(session)
         if not os.path.exists(cl_args.get('dir')):
             os.mkdir(cl_args.get('dir'))
         download_many = download_all
@@ -73,7 +74,7 @@ def main():
             download_many = set_start(cl_args.get('start'), download_many)
         if cl_args.get('end'):
             download_many = set_end(cl_args.get('end'), download_many)
-        download_many(data, session, cl_args)
+        download_many(file_args_dict, session, cl_args)
         session.close()
     except OSError as e:
         print(f'\n{e}')
@@ -116,7 +117,7 @@ def auth_check(session, response, auth_success):
             break
         action = 'https://m.vk.com/' \
                  + html.select('form[method="post"]')[0]['action']
-        data = {'code': input('Verification code: ')}
+        data = {'code': input('Код подтверждения входа: ')}
         response = session.post(action, data=data)
         if response.url == 'https://m.vk.com/feed':
             auth_success = True
@@ -136,54 +137,48 @@ def prepare_data(session):
             for item in items:
                 name = item.select('.si_owner')[0].text
                 data.append({
-                    'link': f'https://m.vk.com/{item["href"]}',
+                    'url': f'https://m.vk.com/{item["href"]}',
                     'name': name,
-                    'pos': counter + 1
+                    'is done': False
                 })
                 counter += 1
         else:
             break
+    data = list(reversed(data))
+    for i, item in enumerate(data):
+        item.update({'pos': i + 1})
     return data
 
 
 def download_all(file_args_list, session, cl_args):
-    const_args = {
-        'session': session,
-        'is_finished': {item.get('link'): False for item in file_args_list},
-        'percentages': set(range(0, 101)),
-        'cl_args': cl_args
-    }
     print(f'Количество файлов: {len(file_args_list)}')
-    for dictionary in file_args_list:
-        dictionary.update(const_args)
-        try:
-            download_file(**dictionary)
-        except OSError as e:
-            print(f'\n{e}')
-    print('\nВсе файлы загружены')
+    for i in range(len(file_args_list)):
+        download_file(i, file_args_list, session, cl_args)
+    report_result(file_args_list)
 
 
-def format_size(n):
-    for unit in ['B', 'KiB', 'MiB', 'GiB']:
-        if 1 < n < 1024:
-            return f'{round(n, 3)} {unit}'
-        n /= 1024
-
-
-def download_file(link, name, pos, session, is_finished, percentages, cl_args):
-    with session.get(link, stream=True) as r:
-        verbose = cl_args.get('verbose')
-        download_dir = cl_args.get('dir')
-        name = correct_file_name(name, download_dir)
-        size = int(r.headers.get('content-length'))
-        with open(name, mode='wb') as f:
-            for i, chunk in enumerate(r.iter_content(CHUNK_SIZE)):
-                f.write(chunk)
-                if verbose:
-                    report_file_progress(pos, name, size, i)
-        if not verbose:
-            is_finished.update({link: True})
-            report_total_progress(percentages, is_finished)
+def download_file(index, file_args_list, session, cl_args):
+    file_args = file_args_list[index]
+    try:
+        with session.get(file_args['url'], stream=True) as r:
+            verbose = cl_args['verbose']
+            download_dir = cl_args['dir']
+            name = correct_file_name(file_args['name'], download_dir)
+            size = int(r.headers['content-length'])
+            with open(name, mode='wb') as f:
+                for i, chunk in enumerate(r.iter_content(CHUNK_SIZE)):
+                    if verbose:
+                        report_file_progress(file_args['pos'], name, size, i)
+                    f.write(chunk)
+    except OSError as e:
+        print(f'\n{e}')
+    else:
+        file_args.update({'is done': True})
+        if verbose:
+            print(f'\r{file_args["pos"]}. '
+                  f'{name} {format_size(size)} загружен      ')
+        else:
+            report_total_progress(file_args_list)
 
 
 def correct_file_name(name, download_dir):
@@ -200,21 +195,33 @@ def correct_file_name(name, download_dir):
     return new_name
 
 
-def report_total_progress(percentages, is_finished):
-    share = reduce(lambda a, x: a + int(x), is_finished.values())
-    progress = int(round(share / len(is_finished), 2) * 100)
-    if progress in percentages:
-        percentages.remove(progress)
-        print(f'\rГотово: {progress}%', end='')
+def report_total_progress(file_args_list):
+    count = reduce(lambda a, x: a + int(x['is done']), file_args_list, 0)
+    progress = int(round(count / len(file_args_list), 2) * 100)
+    print(f'\rГотово: {progress}%', end='')
 
 
 def report_file_progress(pos, name, size, counter):
     progress = round(CHUNK_SIZE * counter / size * 100)
-    if CHUNK_SIZE * (counter + 1) < size:
-        print(f'\r{pos}. {name} {format_size(size)} загрузка:'
-              f' {progress}%', end='')
+    print(f'\r{pos}. {name} {format_size(size)} загрузка:'
+          f' {progress}%', end='')
+
+
+def report_result(file_args_list):
+    filtered = list(filter(lambda x: not x['is done'], file_args_list))
+    if filtered:
+        print('\nНезагруженные файлы:')
+        for file_args in file_args_list:
+            print(f'\r{file_args["pos"]}. { file_args["name"]}')
     else:
-        print(f'\r{pos}. {name} {format_size(size)} загружен')
+        print('\nВсе файлы загружены')
+
+
+def format_size(n):
+    for unit in ['Б', 'КБ', 'МБ']:
+        if 1 <= n < 1024:
+            return f'{round(n, 2)} {unit}'
+        n /= 1024
 
 
 def set_start(pos, f):
