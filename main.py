@@ -8,17 +8,6 @@ import requests
 from bs4 import BeautifulSoup
 
 DEFAULT_DOWNLOAD_DIR = 'docs'
-REQUEST_HEADERS = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:92.0)'
-        ' Gecko/20100101 Firefox/92.0',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,'
-              'image/webp,*/*;q=0.8',
-    'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'DNT': '1',
-    'Connection': 'keep-alive'
-}
 CHUNK_SIZE = 2 ** 16
 
 
@@ -82,46 +71,47 @@ def main():
 
 def login(username, password):
     session = requests.Session()
-    session.headers = REQUEST_HEADERS
+
     response = session.get('https://m.vk.com/')
-    html = BeautifulSoup(response.content, 'html.parser')
-    action = html.select('form[method="POST"]')[0]['action']
-    data = dict(map(lambda pair: (pair['name'], pair['value']), html.select(
-        'form[method="POST"] input[type="hidden"]')))
-    data.update({
-        'email': username,
-        'pass': password
+    soup = BeautifulSoup(response.content, 'html.parser')
+    action = soup.select('form[method="POST"]')[0]['action']
+    data = {'email': username, 'pass': password}
+    session.headers.update({
+        'Origin': 'https://m.vk.com/',
+        'Referer': 'https://m.vk.com/'
     })
     response = session.post(action, data=data)
-    html = BeautifulSoup(response.content, 'html.parser')
-    auth_success = False
-    if response.url == 'https://m.vk.com/feed':
-        auth_success = True
-    elif response.url.startswith('https://m.vk.com/login?act=authcheck'):
+
+    if response.url.endswith('feed'):
+        print('Авторизация пройдена')
+    elif response.url.endswith('authcheck'):
         print('Требуется двухэтапная верификация')
-        auth_success = auth_check(session, response, auth_success)
-    elif not html.select('img.captcha_img'):
-        print('Данные входа неверны')
-    else:
-        print('Требуется капча')
-    print('Авторизация пройдена'
-          if auth_success else 'Авторизация не пройдена')
-    return session, auth_success
+        return session, auth_check(session, response)
+    elif not response.url.endswith('feed'):
+        print('Данные для входа не верны или требуется капча')
+        return session, False
+
+    return session, True
 
 
-def auth_check(session, response, auth_success):
-    while not auth_success:
-        html = BeautifulSoup(response.content, 'html.parser')
-        if html.select('.captcha_img'):
+def auth_check(session, response):
+    while not response.url.endswith('feed'):
+        soup = BeautifulSoup(response.content, 'html.parser')
+        if soup.select('.captcha_img'):
             print('Требуется капча')
-            break
+            return False
         action = 'https://m.vk.com/' \
-                 + html.select('form[method="post"]')[0]['action']
-        data = {'code': input('Код подтверждения входа: ')}
+                 + soup.select('form[method="post"]')[0]['action']
+        data = {
+            'code': input('Код подтверждения входа: ')
+        }
+        session.headers.update({
+            'Referer': 'https://m.vk.com/login?act=authcheck/'
+        })
         response = session.post(action, data=data)
-        if response.url == 'https://m.vk.com/feed':
-            auth_success = True
-    return auth_success
+        if response.url.endswith('feed'):
+            print('Авторизация пройдена')
+            return True
 
 
 def prepare_data(session):
